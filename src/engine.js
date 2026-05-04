@@ -14,7 +14,8 @@ export class StockfishEngine {
 
   _init() {
     const workerCode = `
-      importScripts('https://cdn.jsdelivr.net/npm/stockfish.wasm@0.10.0/stockfish.js');
+      const base = self.location.href.replace(/\/src\/.*$/, '');
+      importScripts(base + '/assets/stockfish/stockfish.js');
       var sf;
       Stockfish().then(function(inst) {
         sf = inst;
@@ -101,7 +102,6 @@ export class BatchAnalyzer {
 
     this.engine.onBestMove = (bm) => this._onBestMove(bm);
     this.engine.onEval = ({ evalCp, depth: d, bestMove }) => {
-      // Track last eval at target depth
       if (d >= this._depth - 2 && this._current >= 0) {
         this._results[this._current] = {
           evalCp,
@@ -123,8 +123,6 @@ export class BatchAnalyzer {
     const { fen, i } = this._queue.shift();
     this._current = i;
     this.engine.analyzePosition(fen, this._depth);
-
-    // Wait for bestmove signal to advance
   }
 
   _onBestMove(bm) {
