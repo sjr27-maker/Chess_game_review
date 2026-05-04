@@ -1,23 +1,28 @@
 /**
- * app.js
- * Wires together: PGN parser → chess logic → board renderer → engine
+ * app.js — Chess Analyzer with full game review (chess.com style)
  */
 
 import { PGNParser, splitGames } from './pgn-parser.js';
 import { Chess, BoardRenderer } from './board.js';
-import { StockfishEngine } from './engine.js';
+import { StockfishEngine, BatchAnalyzer } from './engine.js';
+import { classifyMove, computeAccuracy, phaseAccuracy, CLASS_META } from './classifier.js';
+
+const REVIEW_DEPTH = 16;
 
 class ChessAnalyzer {
   constructor() {
     this.parser   = new PGNParser();
-    this.chess    = new Chess();
     this.engine   = new StockfishEngine();
+    this.analyzer = new BatchAnalyzer(this.engine);
     this.renderer = null;
 
-    this.games    = [];       // parsed games
-    this.currentGame = null;  // { headers, moves }
-    this.fens     = [];       // fen at each half-move (fens[0] = start)
-    this.cursor   = 0;        // current position index
+    this.games       = [];
+    this.currentGame = null;
+    this.fens        = [];      // fen per half-move (index 0 = start)
+    this.moveEvals   = [];      // { evalCp, bestMove } per fen position
+    this.moveData    = [];      // enriched move objects after review
+    this.cursor      = 0;
+    this.reviewing   = false;
 
     this._initUI();
     this._initEngine();
@@ -28,68 +33,46 @@ class ChessAnalyzer {
 
   _initEngine() {
     this.engine.onReady = () => {
-      document.getElementById('engine-status').textContent = 'Stockfish ready';
+      document.getElementById('engine-status').textContent = '● Stockfish ready';
       document.getElementById('engine-status').classList.add('ready');
+      document.getElementById('btn-review').disabled = false;
     };
-    this.engine.onEval = ({ eval: ev, depth, bestMove }) => {
-      this._updateEvalBar(ev, depth, bestMove);
+
+    this.analyzer.onProgress = (idx, result) => {
+      const total = this.fens.length;
+      const pct   = Math.round(((idx + 1) / total) * 100);
+      this._setReviewProgress(pct, idx + 1, total);
+      this.moveEvals[idx] = result;
+
+      // Live update eval graph
+      this._drawEvalGraph();
     };
-  }
 
-  _updateEvalBar(ev, depth, bestMove) {
-    const bar   = document.getElementById('eval-bar-fill');
-    const label = document.getElementById('eval-label');
-    const depthEl = document.getElementById('eval-depth');
-    const bmEl  = document.getElementById('best-move');
-
-    if (!bar) return;
-
-    // ev is from white's perspective; clamp to [-10, 10]
-    const clamped = Math.max(-10, Math.min(10, ev));
-    // percent: 50% = equal. White pushes up.
-    const pct = 50 + (clamped / 10) * 50;
-    bar.style.height = pct + '%';
-
-    if (Math.abs(ev) >= 999) {
-      label.textContent = ev > 0 ? '#' : '-#';
-    } else {
-      label.textContent = (ev > 0 ? '+' : '') + ev.toFixed(1);
-    }
-    if (depthEl) depthEl.textContent = `d${depth}`;
-    if (bmEl && bestMove) {
-      bmEl.textContent = `Best: ${bestMove}`;
-      this._highlightBestMove(bestMove);
-    }
-  }
-
-  _highlightBestMove(uci) {
-    // uci like "e2e4" → square indices
-    const files = 'abcdefgh';
-    const fc = files.indexOf(uci[0]);
-    const fr = 8 - parseInt(uci[1]);
-    const tc = files.indexOf(uci[2]);
-    const tr = 8 - parseInt(uci[3]);
-    const fromIdx = fr * 8 + fc;
-    const toIdx   = tr * 8 + tc;
-    this.renderer.highlight(fromIdx, toIdx);
-    this._drawBoard();
+    this.analyzer.onComplete = (results) => {
+      this.moveEvals = results;
+      this._classifyAllMoves();
+      this._renderReviewPanel();
+      this._drawEvalGraph();
+      this.reviewing = false;
+      document.getElementById('btn-review').disabled = false;
+      document.getElementById('btn-review').textContent = '↺ Re-analyze';
+      document.getElementById('review-progress').classList.add('hidden');
+    };
   }
 
   // ─── UI Init ─────────────────────────────────────────────────────────────
 
   _initUI() {
-    // Board
     const boardEl = document.getElementById('board');
     this.renderer = new BoardRenderer(boardEl);
     this._drawBoard();
 
-    // PGN input
+    // PGN load
     document.getElementById('btn-load-pgn').addEventListener('click', () => {
       const pgn = document.getElementById('pgn-input').value.trim();
       if (pgn) this._loadPGN(pgn);
     });
 
-    // File upload
     const fileInput = document.getElementById('pgn-file');
     fileInput.addEventListener('change', (e) => {
       const file = e.target.files[0];
@@ -100,26 +83,31 @@ class ChessAnalyzer {
     });
     window.triggerFileOpen = () => fileInput.click();
 
-    // Navigation
+    // Nav
     document.getElementById('btn-first').addEventListener('click', () => this._goto(0));
     document.getElementById('btn-prev').addEventListener('click',  () => this._goto(this.cursor - 1));
     document.getElementById('btn-next').addEventListener('click',  () => this._goto(this.cursor + 1));
     document.getElementById('btn-last').addEventListener('click',  () => this._goto(this.fens.length - 1));
-
-    // Flip
-    document.getElementById('btn-flip').addEventListener('click', () => {
+    document.getElementById('btn-flip').addEventListener('click',  () => {
       this.renderer.flipped = !this.renderer.flipped;
       this._drawBoard();
     });
 
-    // Auto-analyze toggle
-    document.getElementById('btn-analyze').addEventListener('click', () => {
-      this._analyzeCurrentPosition();
-    });
+    // Review
+    document.getElementById('btn-review').addEventListener('click', () => this._startReview());
 
-    // Game selector
+    // Game select
     document.getElementById('game-select').addEventListener('change', (e) => {
       this._selectGame(parseInt(e.target.value));
+    });
+
+    // Eval graph click to navigate
+    document.getElementById('eval-graph').addEventListener('click', (e) => {
+      const rect = e.currentTarget.getBoundingClientRect();
+      const x = e.clientX - rect.left;
+      const pct = x / rect.width;
+      const idx = Math.round(pct * (this.fens.length - 1));
+      this._goto(Math.max(0, Math.min(this.fens.length - 1, idx)));
     });
   }
 
@@ -133,22 +121,19 @@ class ChessAnalyzer {
     });
   }
 
-  // ─── PGN Loading ──────────────────────────────────────────────────────────
+  // ─── PGN ─────────────────────────────────────────────────────────────────
 
   _loadPGN(text) {
     try {
       const gameTexts = splitGames(text);
       this.games = gameTexts.map(g => this.parser.parse(g));
 
-      // Populate game selector
       const sel = document.getElementById('game-select');
       sel.innerHTML = '';
       this.games.forEach((g, i) => {
         const opt = document.createElement('option');
         opt.value = i;
-        const w = g.headers.White || '?';
-        const b = g.headers.Black || '?';
-        opt.textContent = `Game ${i + 1}: ${w} vs ${b}`;
+        opt.textContent = `${g.headers.White || '?'} vs ${g.headers.Black || '?'}`;
         sel.appendChild(opt);
       });
 
@@ -162,28 +147,246 @@ class ChessAnalyzer {
 
   _selectGame(idx) {
     this.currentGame = this.games[idx];
+    this.moveEvals = [];
+    this.moveData  = [];
     this._buildFENList();
     this._renderMoveList();
     this._renderHeaders();
+    this._clearReviewPanel();
+    this._drawEvalGraph();
     this._goto(0);
   }
 
   _buildFENList() {
-    const game = this.currentGame;
-    const chess = new Chess(); // fresh instance
+    const chess = new Chess();
     this.fens = [chess.fen()];
-
-    for (const move of game.moves) {
+    for (const move of this.currentGame.moves) {
       const result = chess.move(move.san);
-      if (!result) {
-        console.warn('Could not apply move:', move.san);
-        break;
-      }
-      move.fen = chess.fen();
+      if (!result) { console.warn('Cannot apply:', move.san); break; }
       move.from = result.from;
-      move.to = result.to;
+      move.to   = result.to;
+      move.fen  = chess.fen();
       this.fens.push(chess.fen());
     }
+  }
+
+  // ─── Review ──────────────────────────────────────────────────────────────
+
+  _startReview() {
+    if (this.reviewing) return;
+    this.reviewing = true;
+    this.moveEvals = new Array(this.fens.length).fill(null);
+    document.getElementById('btn-review').disabled = true;
+    document.getElementById('btn-review').textContent = 'Analyzing…';
+    document.getElementById('review-progress').classList.remove('hidden');
+    this._setReviewProgress(0, 0, this.fens.length);
+    this.analyzer.analyze(this.fens, REVIEW_DEPTH);
+  }
+
+  _setReviewProgress(pct, done, total) {
+    const bar  = document.getElementById('progress-bar-fill');
+    const text = document.getElementById('progress-text');
+    if (bar)  bar.style.width = pct + '%';
+    if (text) text.textContent = `Analyzing… ${done}/${total} positions`;
+  }
+
+  _classifyAllMoves() {
+    const moves = this.currentGame.moves;
+    this.moveData = [];
+
+    for (let i = 0; i < moves.length; i++) {
+      const move    = moves[i];
+      const evalIdx = i + 1; // eval after the move
+      const prevIdx = i;     // eval before the move
+
+      const prevResult = this.moveEvals[prevIdx];
+      const curResult  = this.moveEvals[evalIdx];
+
+      if (!prevResult || !curResult) {
+        this.moveData.push({ ...move, classification: 'best', cpLoss: 0 });
+        continue;
+      }
+
+      // Convert to mover's perspective
+      // evalCp is always from white's perspective in our engine output
+      const color = move.color; // 'w' or 'b'
+      const sign  = color === 'w' ? 1 : -1;
+
+      const evalBefore = sign * prevResult.evalCp / 100; // pawns, mover's POV before
+      const evalAfter  = sign * curResult.evalCp  / 100; // pawns, from same mover's POV after
+
+      // The engine's best move at prevIdx
+      const engineBest = prevResult.bestMove;
+      // Reconstruct what the actual move UCI would be
+      const actualUCI  = this._moveToUCI(move);
+      const wasBest    = engineBest && actualUCI && engineBest === actualUCI;
+
+      const cpLoss    = Math.round((evalBefore - evalAfter) * 100); // in cp
+      const classif   = classifyMove(evalBefore * 100, evalAfter * 100, wasBest);
+
+      this.moveData.push({ ...move, classification: classif, cpLoss: Math.max(0, cpLoss), wasBest });
+    }
+  }
+
+  _moveToUCI(move) {
+    if (!move || move.from === undefined) return null;
+    const files = 'abcdefgh';
+    const from  = files[move.from % 8] + (8 - Math.floor(move.from / 8));
+    const to    = files[move.to   % 8] + (8 - Math.floor(move.to   / 8));
+    return from + to;
+  }
+
+  // ─── Review Panel ────────────────────────────────────────────────────────
+
+  _renderReviewPanel() {
+    const h = this.currentGame.headers;
+
+    // Accuracy
+    const whiteMoves = this.moveData.filter(m => m.color === 'w');
+    const blackMoves = this.moveData.filter(m => m.color === 'b');
+    const wAcc = computeAccuracy(whiteMoves.map(m => m.cpLoss));
+    const bAcc = computeAccuracy(blackMoves.map(m => m.cpLoss));
+
+    document.getElementById('white-accuracy').textContent = wAcc;
+    document.getElementById('black-accuracy').textContent = bAcc;
+    document.getElementById('white-name').textContent = h.White || 'White';
+    document.getElementById('black-name').textContent = h.Black || 'Black';
+    document.getElementById('white-rating').textContent = h.WhiteElo ? `(${h.WhiteElo})` : '';
+    document.getElementById('black-rating').textContent = h.BlackElo ? `(${h.BlackElo})` : '';
+
+    // Move classification counts
+    const classifications = ['brilliant','great','best','good','inaccuracy','mistake','miss','blunder'];
+    for (const cls of classifications) {
+      const wCount = whiteMoves.filter(m => m.classification === cls).length;
+      const bCount = blackMoves.filter(m => m.classification === cls).length;
+      const wEl = document.getElementById(`w-${cls}`);
+      const bEl = document.getElementById(`b-${cls}`);
+      if (wEl) wEl.textContent = wCount;
+      if (bEl) bEl.textContent = bCount;
+    }
+
+    // Phase accuracy
+    const wPhase = phaseAccuracy(whiteMoves);
+    const bPhase = phaseAccuracy(blackMoves);
+
+    for (const phase of ['opening','middlegame','endgame']) {
+      const wEl = document.getElementById(`w-phase-${phase}`);
+      const bEl = document.getElementById(`b-phase-${phase}`);
+      if (wEl) wEl.textContent = wPhase[phase] !== null ? wPhase[phase] : '—';
+      if (bEl) bEl.textContent = bPhase[phase] !== null ? bPhase[phase] : '—';
+    }
+
+    document.getElementById('review-panel').classList.remove('hidden');
+    document.getElementById('game-info').classList.add('hidden');
+
+    // Re-render move list with classifications
+    this._renderMoveList();
+  }
+
+  _clearReviewPanel() {
+    document.getElementById('review-panel').classList.add('hidden');
+    document.getElementById('game-info').classList.remove('hidden');
+  }
+
+  // ─── Eval Graph ──────────────────────────────────────────────────────────
+
+  _drawEvalGraph() {
+    const canvas = document.getElementById('eval-graph');
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+    const W = canvas.width  = canvas.offsetWidth;
+    const H = canvas.height = canvas.offsetHeight;
+    ctx.clearRect(0, 0, W, H);
+
+    const evals = this.moveEvals.filter(Boolean);
+    if (evals.length < 2) {
+      // Draw empty state
+      ctx.fillStyle = '#1c1c1c';
+      ctx.fillRect(0, 0, W, H);
+      ctx.fillStyle = '#333';
+      ctx.font = '11px monospace';
+      ctx.fillText('Run analysis to see eval graph', W/2 - 90, H/2);
+      return;
+    }
+
+    const allEvals = this.moveEvals.map(e => e ? Math.max(-1500, Math.min(1500, e.evalCp)) : 0);
+
+    // Background
+    ctx.fillStyle = '#141414';
+    ctx.fillRect(0, 0, W, H);
+
+    // Zero line
+    const mid = H / 2;
+    ctx.strokeStyle = '#333';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(0, mid);
+    ctx.lineTo(W, mid);
+    ctx.stroke();
+
+    // Eval area fill
+    const xStep = W / Math.max(1, allEvals.length - 1);
+
+    const toY = (cp) => {
+      const clamped = Math.max(-800, Math.min(800, cp));
+      return mid - (clamped / 800) * mid;
+    };
+
+    // White area (above midline)
+    ctx.beginPath();
+    ctx.moveTo(0, mid);
+    allEvals.forEach((cp, i) => ctx.lineTo(i * xStep, toY(cp)));
+    ctx.lineTo((allEvals.length - 1) * xStep, mid);
+    ctx.closePath();
+    ctx.fillStyle = 'rgba(240, 217, 181, 0.85)';
+    ctx.fill();
+
+    // Black area (below midline)
+    ctx.beginPath();
+    ctx.moveTo(0, mid);
+    allEvals.forEach((cp, i) => ctx.lineTo(i * xStep, toY(cp)));
+    ctx.lineTo((allEvals.length - 1) * xStep, mid);
+    ctx.closePath();
+    ctx.fillStyle = 'rgba(30, 30, 30, 0.5)';
+    ctx.fill();
+
+    // Draw line
+    ctx.beginPath();
+    ctx.strokeStyle = '#c8a96e';
+    ctx.lineWidth = 1.5;
+    allEvals.forEach((cp, i) => {
+      i === 0 ? ctx.moveTo(0, toY(cp)) : ctx.lineTo(i * xStep, toY(cp));
+    });
+    ctx.stroke();
+
+    // Move classification dots
+    if (this.moveData.length) {
+      this.moveData.forEach((m, i) => {
+        const evalIdx = i + 1;
+        if (!this.moveEvals[evalIdx]) return;
+        const cls = m.classification;
+        if (!cls || cls === 'best' || cls === 'good') return; // only show notable
+        const meta = CLASS_META[cls];
+        if (!meta) return;
+        const x = evalIdx * xStep;
+        const y = toY(this.moveEvals[evalIdx].evalCp);
+        ctx.beginPath();
+        ctx.arc(x, y, 3.5, 0, Math.PI * 2);
+        ctx.fillStyle = meta.color;
+        ctx.fill();
+      });
+    }
+
+    // Cursor line
+    const curX = this.cursor * xStep;
+    ctx.strokeStyle = 'rgba(255,255,255,0.6)';
+    ctx.lineWidth = 1.5;
+    ctx.setLineDash([3, 3]);
+    ctx.beginPath();
+    ctx.moveTo(curX, 0);
+    ctx.lineTo(curX, H);
+    ctx.stroke();
+    ctx.setLineDash([]);
   }
 
   // ─── Navigation ──────────────────────────────────────────────────────────
@@ -193,23 +396,58 @@ class ChessAnalyzer {
     idx = Math.max(0, Math.min(this.fens.length - 1, idx));
     this.cursor = idx;
 
-    // Highlight last move
     const move = this.currentGame?.moves[idx - 1];
-    if (move && move.from !== undefined) {
+    if (move?.from !== undefined) {
       this.renderer.highlight(move.from, move.to);
     } else {
       this.renderer.highlight(-1, -1);
     }
 
     this._drawBoard();
+    this._drawEvalGraph();
     this._highlightActiveMoveInList(idx - 1);
-    this._analyzeCurrentPosition();
     this._updateNavButtons();
+    this._updateLiveEval();
   }
 
-  _analyzeCurrentPosition() {
-    if (!this.engine.ready || !this.fens[this.cursor]) return;
-    this.engine.analyzePosition(this.fens[this.cursor], 20);
+  _updateLiveEval() {
+    const result = this.moveEvals[this.cursor];
+    const label  = document.getElementById('eval-label');
+    const bar    = document.getElementById('eval-bar-fill');
+    const depth  = document.getElementById('eval-depth');
+
+    if (!result) {
+      // real-time analysis
+      this.engine.onEval = ({ evalCp, depth: d }) => {
+        const pct = 50 + Math.max(-50, Math.min(50, evalCp / 800 * 50));
+        if (bar) bar.style.height = pct + '%';
+        if (label) label.textContent = evalCp >= 0
+          ? `+${(evalCp/100).toFixed(1)}`
+          : (evalCp/100).toFixed(1);
+        if (depth) depth.textContent = `d${d}`;
+      };
+      this.engine.analyzePosition(this.fens[this.cursor], 20);
+    } else {
+      const cp  = result.evalCp;
+      const pct = 50 + Math.max(-50, Math.min(50, cp / 800 * 50));
+      if (bar) bar.style.height = pct + '%';
+      if (label) label.textContent = cp >= 0
+        ? `+${(cp/100).toFixed(1)}`
+        : (cp/100).toFixed(1);
+      if (depth) depth.textContent = result.depth ? `d${result.depth}` : '';
+    }
+
+    // Show move classification badge
+    const move = this.moveData[this.cursor - 1];
+    const badge = document.getElementById('move-badge');
+    if (badge && move?.classification) {
+      const meta = CLASS_META[move.classification];
+      badge.textContent = `${meta.symbol} ${meta.label}`;
+      badge.style.color = meta.color;
+      badge.style.display = 'block';
+    } else if (badge) {
+      badge.style.display = 'none';
+    }
   }
 
   _updateNavButtons() {
@@ -248,9 +486,17 @@ class ChessAnalyzer {
 
       const btn = document.createElement('button');
       btn.className = 'move-btn';
-      btn.textContent = move.san;
       btn.dataset.idx = i + 1;
       btn.addEventListener('click', () => this._goto(i + 1));
+
+      const data = this.moveData[i];
+      const cls  = data?.classification;
+      const meta = cls ? CLASS_META[cls] : null;
+
+      btn.innerHTML = `<span class="move-san">${move.san}</span>${meta && cls !== 'best' && cls !== 'good'
+        ? `<span class="move-cls-dot" style="color:${meta.color}">${meta.symbol}</span>`
+        : ''}`;
+
       if (row) row.appendChild(btn);
     });
   }
@@ -266,23 +512,19 @@ class ChessAnalyzer {
     }
   }
 
-  // ─── Headers ─────────────────────────────────────────────────────────────
+  // ─── Game Info ───────────────────────────────────────────────────────────
 
   _renderHeaders() {
     const h = this.currentGame?.headers || {};
-    const el = document.getElementById('game-info');
-    el.innerHTML = `
-      <div class="info-row"><span class="info-key">White</span><span class="info-val">${h.White || '?'} ${h.WhiteElo ? `(${h.WhiteElo})` : ''}</span></div>
-      <div class="info-row"><span class="info-key">Black</span><span class="info-val">${h.Black || '?'} ${h.BlackElo ? `(${h.BlackElo})` : ''}</span></div>
+    document.getElementById('game-info').innerHTML = `
+      <div class="info-row"><span class="info-key">White</span><span class="info-val">${h.White || '?'}${h.WhiteElo ? ` (${h.WhiteElo})` : ''}</span></div>
+      <div class="info-row"><span class="info-key">Black</span><span class="info-val">${h.Black || '?'}${h.BlackElo ? ` (${h.BlackElo})` : ''}</span></div>
       <div class="info-row"><span class="info-key">Event</span><span class="info-val">${h.Event || '?'}</span></div>
       <div class="info-row"><span class="info-key">Date</span><span class="info-val">${h.Date || '?'}</span></div>
-      <div class="info-row"><span class="info-key">Result</span><span class="info-val result-${h.Result?.replace('/', '-') || 'unknown'}">${h.Result || '?'}</span></div>
+      <div class="info-row"><span class="info-key">Result</span><span class="info-val">${h.Result || '?'}</span></div>
       <div class="info-row"><span class="info-key">ECO</span><span class="info-val">${h.ECO || '?'} ${h.Opening || ''}</span></div>
     `;
   }
 }
 
-// Bootstrap
-window.addEventListener('DOMContentLoaded', () => {
-  new ChessAnalyzer();
-});
+window.addEventListener('DOMContentLoaded', () => new ChessAnalyzer());
