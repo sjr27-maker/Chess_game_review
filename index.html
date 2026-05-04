@@ -8,75 +8,199 @@
 </head>
 <body>
 
-  <!-- ── PGN Input Panel ── -->
+  <!-- ── PGN Input ── -->
   <div id="pgn-panel">
-    <div class="app-logo">Chess<span>Analyzer</span></div>
+    <div class="app-logo">♟ Chess<span>Analyzer</span></div>
+    <p class="app-sub">Load a PGN to analyze with Stockfish</p>
     <div class="pgn-box">
-      <textarea id="pgn-input" placeholder='Paste PGN here, e.g.
+      <textarea id="pgn-input" placeholder='Paste PGN here…
 
 [Event "World Chess Championship"]
 [White "Kasparov, Garry"]
 [Black "Deep Blue"]
 [Result "1-0"]
 
-1. e4 e5 2. Nf3 Nc6 3. Bb5 a6 4. Ba4 Nf6 ...'></textarea>
+1. e4 e5 2. Nf3 Nc6 3. Bb5 a6 ...'></textarea>
       <div class="pgn-actions">
         <button class="btn primary" id="btn-load-pgn">Load PGN</button>
-        <label class="btn" style="cursor:pointer;">
-          📂 Open File
+        <label class="btn">
+          📂 Open .pgn File
           <input type="file" id="pgn-file" accept=".pgn,.txt" style="display:none" />
         </label>
       </div>
     </div>
   </div>
 
-  <!-- ── Main Analyzer UI ── -->
+  <!-- ── Main App ── -->
   <div id="main-content" class="hidden">
 
-    <!-- Top Bar -->
+    <!-- Top bar -->
     <div id="topbar">
-      <span class="topbar-logo">♟ Chess Analyzer</span>
+      <span class="topbar-logo">♟ ChessAnalyzer</span>
       <select id="game-select"></select>
-      <button class="btn" id="btn-analyze">Analyze</button>
-      <button class="btn" id="btn-flip">⇅ Flip</button>
-      <span id="engine-status">Loading Stockfish…</span>
+      <button class="btn small" id="btn-review">⚡ Analyze Game</button>
+      <button class="btn small" id="btn-flip">⇅ Flip</button>
+      <button class="btn small" onclick="
+        document.getElementById('pgn-panel').classList.remove('hidden');
+        document.getElementById('main-content').classList.add('hidden');
+      ">+ New</button>
+      <span id="engine-status">⏳ Loading Stockfish…</span>
     </div>
 
-    <!-- Eval Bar -->
-    <div id="eval-bar-col">
-      <div id="eval-bar-wrap">
-        <div id="eval-bar-fill"></div>
+    <!-- Main 3-column layout -->
+    <div id="app-layout">
+
+      <!-- LEFT: Eval bar -->
+      <div id="eval-col">
+        <div id="eval-bar-wrap">
+          <div id="eval-bar-fill"></div>
+        </div>
+        <div id="eval-label">0.0</div>
+        <div id="eval-depth"></div>
       </div>
-      <div id="eval-label">0.0</div>
-      <div id="eval-depth"></div>
-    </div>
 
-    <!-- Board -->
-    <div id="board-area">
-      <div id="board"></div>
-    </div>
+      <!-- CENTER: Board + graph + nav -->
+      <div id="center-col">
+        <div id="board-wrap">
+          <div id="board"></div>
+          <div id="move-badge" style="display:none"></div>
+        </div>
 
-    <!-- Right Panel -->
-    <div id="right-panel">
-      <div id="game-info"></div>
-      <div id="best-move">Best: —</div>
-      <div id="move-list-wrap">
-        <div id="move-list"></div>
+        <!-- Eval graph -->
+        <div id="graph-wrap">
+          <canvas id="eval-graph"></canvas>
+        </div>
+
+        <!-- Progress bar -->
+        <div id="review-progress" class="hidden">
+          <div id="progress-bar">
+            <div id="progress-bar-fill"></div>
+          </div>
+          <div id="progress-text">Analyzing…</div>
+        </div>
+
+        <!-- Nav controls -->
+        <div id="nav-bar">
+          <button class="nav-btn" id="btn-first" title="Start (↑)">⏮</button>
+          <button class="nav-btn" id="btn-prev"  title="Prev (←)">◀</button>
+          <button class="nav-btn" id="btn-next"  title="Next (→)">▶</button>
+          <button class="nav-btn" id="btn-last"  title="End (↓)">⏭</button>
+          <span class="nav-hint">← → keys to navigate</span>
+        </div>
+      </div>
+
+      <!-- RIGHT: Review panel / Move list -->
+      <div id="right-col">
+
+        <!-- Game Info (pre-analysis) -->
+        <div id="game-info"></div>
+
+        <!-- Review Panel (post-analysis) -->
+        <div id="review-panel" class="hidden">
+
+          <!-- Accuracy row -->
+          <div id="accuracy-row">
+            <div class="player-acc white-side">
+              <div class="player-name" id="white-name">White</div>
+              <div class="player-rating" id="white-rating"></div>
+              <div class="acc-score" id="white-accuracy">—</div>
+              <div class="acc-label">Accuracy</div>
+            </div>
+            <div class="acc-divider"></div>
+            <div class="player-acc black-side">
+              <div class="player-name" id="black-name">Black</div>
+              <div class="player-rating" id="black-rating"></div>
+              <div class="acc-score" id="black-accuracy">—</div>
+              <div class="acc-label">Accuracy</div>
+            </div>
+          </div>
+
+          <!-- Classification table -->
+          <div id="class-table">
+            <div class="class-header">
+              <span></span><span></span>
+              <span class="col-w">White</span>
+              <span class="col-b">Black</span>
+            </div>
+            <!-- rows generated below -->
+            <div class="class-row" data-cls="brilliant">
+              <span class="cls-icon" style="background:#1baca6">!!</span>
+              <span class="cls-label">Brilliant</span>
+              <span class="cls-count w" id="w-brilliant">—</span>
+              <span class="cls-count b" id="b-brilliant">—</span>
+            </div>
+            <div class="class-row" data-cls="great">
+              <span class="cls-icon" style="background:#5c8bb0">!</span>
+              <span class="cls-label">Great</span>
+              <span class="cls-count w" id="w-great">—</span>
+              <span class="cls-count b" id="b-great">—</span>
+            </div>
+            <div class="class-row" data-cls="best">
+              <span class="cls-icon" style="background:#6fba3b">★</span>
+              <span class="cls-label">Best</span>
+              <span class="cls-count w" id="w-best">—</span>
+              <span class="cls-count b" id="b-best">—</span>
+            </div>
+            <div class="class-row" data-cls="good">
+              <span class="cls-icon" style="background:#97b0c0">✓</span>
+              <span class="cls-label">Good</span>
+              <span class="cls-count w" id="w-good">—</span>
+              <span class="cls-count b" id="b-good">—</span>
+            </div>
+            <div class="class-row" data-cls="inaccuracy">
+              <span class="cls-icon" style="background:#e8c44a">?!</span>
+              <span class="cls-label">Inaccuracy</span>
+              <span class="cls-count w" id="w-inaccuracy">—</span>
+              <span class="cls-count b" id="b-inaccuracy">—</span>
+            </div>
+            <div class="class-row" data-cls="mistake">
+              <span class="cls-icon" style="background:#e87a20">?</span>
+              <span class="cls-label">Mistake</span>
+              <span class="cls-count w" id="w-mistake">—</span>
+              <span class="cls-count b" id="b-mistake">—</span>
+            </div>
+            <div class="class-row" data-cls="miss">
+              <span class="cls-icon" style="background:#e87a20">✗</span>
+              <span class="cls-label">Miss</span>
+              <span class="cls-count w" id="w-miss">—</span>
+              <span class="cls-count b" id="b-miss">—</span>
+            </div>
+            <div class="class-row" data-cls="blunder">
+              <span class="cls-icon" style="background:#ca3431">??</span>
+              <span class="cls-label">Blunder</span>
+              <span class="cls-count w" id="w-blunder">—</span>
+              <span class="cls-count b" id="b-blunder">—</span>
+            </div>
+          </div>
+
+          <!-- Phase accuracy -->
+          <div id="phase-table">
+            <div class="phase-header">Phase Accuracy</div>
+            <div class="phase-row">
+              <span class="phase-name">Opening</span>
+              <span class="phase-val w" id="w-phase-opening">—</span>
+              <span class="phase-val b" id="b-phase-opening">—</span>
+            </div>
+            <div class="phase-row">
+              <span class="phase-name">Middlegame</span>
+              <span class="phase-val w" id="w-phase-middlegame">—</span>
+              <span class="phase-val b" id="b-phase-middlegame">—</span>
+            </div>
+            <div class="phase-row">
+              <span class="phase-name">Endgame</span>
+              <span class="phase-val w" id="w-phase-endgame">—</span>
+              <span class="phase-val b" id="b-phase-endgame">—</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Move list (always visible) -->
+        <div id="move-list-wrap">
+          <div id="move-list"></div>
+        </div>
+
       </div>
     </div>
-
-    <!-- Bottom Nav Bar -->
-    <div id="bottombar">
-      <button class="nav-btn" id="btn-first" title="Go to start (↑)">⏮</button>
-      <button class="nav-btn" id="btn-prev"  title="Previous move (←)">◀</button>
-      <button class="nav-btn" id="btn-next"  title="Next move (→)">▶</button>
-      <button class="nav-btn" id="btn-last"  title="Go to end (↓)">⏭</button>
-      <span class="position-info" id="position-info">Use ← → arrow keys to navigate</span>
-      <button class="btn" id="btn-load-new" onclick="document.getElementById('pgn-panel').classList.remove('hidden'); document.getElementById('main-content').classList.add('hidden');">
-        + New Game
-      </button>
-    </div>
-
   </div>
 
   <script type="module" src="src/app.js"></script>
