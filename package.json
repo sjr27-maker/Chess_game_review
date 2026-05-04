@@ -1,0 +1,24 @@
+{
+  "name": "chess-analyzer",
+  "version": "1.0.0",
+  "description": "PGN-Based Chess Game Analysis Tool",
+  "main": "electron/main.js",
+  "scripts": {
+    "start": "electron .",
+    "dev": "npx serve . -p 3000",
+    "build": "electron-builder"
+  },
+  "devDependencies": {
+    "electron": "^28.0.0",
+    "electron-builder": "^24.0.0"
+  },
+  "build": {
+    "appId": "com.chessanalyzer.app",
+    "productName": "Chess Analyzer",
+    "directories": { "output": "dist" },
+    "files": ["**/*", "!node_modules/.cache"],
+    "mac": { "target": "dmg" },
+    "win": { "target": "nsis" },
+    "linux": { "target": "AppImage" }
+  }
+}
