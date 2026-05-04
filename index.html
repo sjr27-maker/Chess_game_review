@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Chess Analyzer</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+
+  <!-- ── PGN Input Panel ── -->
+  <div id="pgn-panel">
+    <div class="app-logo">Chess<span>Analyzer</span></div>
+    <div class="pgn-box">
+      <textarea id="pgn-input" placeholder='Paste PGN here, e.g.
+
+[Event "World Chess Championship"]
+[White "Kasparov, Garry"]
+[Black "Deep Blue"]
+[Result "1-0"]
+
+1. e4 e5 2. Nf3 Nc6 3. Bb5 a6 4. Ba4 Nf6 ...'></textarea>
+      <div class="pgn-actions">
+        <button class="btn primary" id="btn-load-pgn">Load PGN</button>
+        <label class="btn" style="cursor:pointer;">
+          📂 Open File
+          <input type="file" id="pgn-file" accept=".pgn,.txt" style="display:none" />
+        </label>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Main Analyzer UI ── -->
+  <div id="main-content" class="hidden">
+
+    <!-- Top Bar -->
+    <div id="topbar">
+      <span class="topbar-logo">♟ Chess Analyzer</span>
+      <select id="game-select"></select>
+      <button class="btn" id="btn-analyze">Analyze</button>
+      <button class="btn" id="btn-flip">⇅ Flip</button>
+      <span id="engine-status">Loading Stockfish…</span>
+    </div>
+
+    <!-- Eval Bar -->
+    <div id="eval-bar-col">
+      <div id="eval-bar-wrap">
+        <div id="eval-bar-fill"></div>
+      </div>
+      <div id="eval-label">0.0</div>
+      <div id="eval-depth"></div>
+    </div>
+
+    <!-- Board -->
+    <div id="board-area">
+      <div id="board"></div>
+    </div>
+
+    <!-- Right Panel -->
+    <div id="right-panel">
+      <div id="game-info"></div>
+      <div id="best-move">Best: —</div>
+      <div id="move-list-wrap">
+        <div id="move-list"></div>
+      </div>
+    </div>
+
+    <!-- Bottom Nav Bar -->
+    <div id="bottombar">
+      <button class="nav-btn" id="btn-first" title="Go to start (↑)">⏮</button>
+      <button class="nav-btn" id="btn-prev"  title="Previous move (←)">◀</button>
+      <button class="nav-btn" id="btn-next"  title="Next move (→)">▶</button>
+      <button class="nav-btn" id="btn-last"  title="Go to end (↓)">⏭</button>
+      <span class="position-info" id="position-info">Use ← → arrow keys to navigate</span>
+      <button class="btn" id="btn-load-new" onclick="document.getElementById('pgn-panel').classList.remove('hidden'); document.getElementById('main-content').classList.add('hidden');">
+        + New Game
+      </button>
+    </div>
+
+  </div>
+
+  <script type="module" src="src/app.js"></script>
+</body>
+</html>
